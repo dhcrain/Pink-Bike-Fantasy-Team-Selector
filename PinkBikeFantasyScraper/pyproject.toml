@@ -1,0 +1,18 @@
+[project]
+name = "pinkbikefantasyscraper"
+version = "0.1.0"
+description = ""
+authors = [{ name = "Davis Crain", email = "dhcrain@gmail.com" }]
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = [
+    "beautifulsoup4>=4.13.4,<5",
+    "requests>=2.32.3,<3",
+    "python-dotenv>=1.1.0,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
+
