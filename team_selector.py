@@ -23,6 +23,7 @@ def read_riders(csv_path):
         # Compute max points and max uci_points dynamically
         max_points = max(get_number_or_0(row.get('points', 0)) for row in reader if row.get('points')) or 1
         max_uci = max(get_number_or_0(row.get('uci_points', 0)) for row in reader if row.get('uci_points')) or 1
+        print(f"Max Pinkbike points: {max_points}, Max UCI points: {max_uci}")
         for row in reader:
             value = get_number_or_0(row.get('value'))
             uci_points = get_number_or_0(row.get('uci_points'))
@@ -45,29 +46,71 @@ def read_riders(csv_path):
                 })
     return riders
 
-def precompute_teams(riders, count, criteria_key):
+def precompute_teams(riders, count, criteria_key, balance_factor=None, keep_top_percent=None):
     possible_teams = []
+    total_combinations = 0
+    
     for team in itertools.combinations(riders, count):
+        total_combinations += 1
         total_value = sum(r['value'] for r in team)
         total_score = sum(r[criteria_key] for r in team)
+        
         if total_value < BUDGET:
-            possible_teams.append({'team': team, 'value': total_value, criteria_key: total_score})
-    # Sort teams from highest to lowest by criteria_key
-    possible_teams.sort(key=lambda t: t[criteria_key], reverse=True)
+            team_data = {'team': team, 'value': total_value, criteria_key: total_score}
+            
+            # Precompute balance metrics if balance_factor is provided
+            if balance_factor is not None:
+                points_list = [rider['points'] for rider in team]
+                mean_points = sum(points_list) / len(points_list)
+                variance = sum((p - mean_points) ** 2 for p in points_list) / len(points_list)
+                std_dev = variance ** 0.5
+                
+                # Calculate balanced score - penalize teams with high variance
+                balanced_score = total_score - (std_dev / balance_factor)
+                team_data['balanced_score'] = balanced_score
+                team_data['std_dev'] = std_dev
+                
+                # Calculate coefficient of variation (std_dev / mean) as a balance metric
+                # Lower values indicate better balance
+                if mean_points > 0:
+                    team_data['cv'] = std_dev / mean_points
+                else:
+                    team_data['cv'] = float('inf')  # Handle edge case of zero points
+            
+            possible_teams.append(team_data)
+    
+    # Sort teams appropriately based on available keys
+    if balance_factor is not None:
+        # Sort by balanced score
+        possible_teams.sort(key=lambda t: t['balanced_score'], reverse=True)
+        
+        # If keep_top_percent is specified, filter out poor candidates
+        # This will retain teams with good scores but also good balance
+        if keep_top_percent and len(possible_teams) > 20:  # Only filter if we have enough teams
+            # Keep top performers
+            keep_count = max(20, int(len(possible_teams) * (keep_top_percent / 100.0)))
+            possible_teams = possible_teams[:keep_count]
+    else:
+        possible_teams.sort(key=lambda t: t[criteria_key], reverse=True)
+    
+    print(f"  Generated {total_combinations} combinations, kept {len(possible_teams)} teams")
     return possible_teams
 
-def select_best_value_team(valid_riders, criteria_key='score', balance_factor=1.5):
+def select_best_value_team(valid_riders, criteria_key='score', balance_factor=1.5, keep_top_percent=20):
     males = [r for r in valid_riders if r['gender'] == 'male']
     females = [r for r in valid_riders if r['gender'] == 'female']
     if len(males) < MALE_COUNT or len(females) < FEMALE_COUNT:
         print(f"Not enough eligible riders: {len(males)} males, {len(females)} females.")
         return None, 0
 
-    female_teams = precompute_teams(females, FEMALE_COUNT, criteria_key)
+    # We precompute balance metrics for individual gender teams
+    # and filter out poorly balanced teams early by keeping only the top percentage
+    female_teams = precompute_teams(females, FEMALE_COUNT, criteria_key, balance_factor, keep_top_percent)
     print(f"Found {len(female_teams)} possible female teams")
 
-    # Precompute all possible 4-male teams
-    male_teams = precompute_teams(males, MALE_COUNT, criteria_key)
+    # Precompute all possible male teams with balance metrics
+    # Similarly, filter out poorly balanced teams
+    male_teams = precompute_teams(males, MALE_COUNT, criteria_key, balance_factor, keep_top_percent)
     print(f"Found {len(male_teams)} possible male teams")
 
     # For each female team, find the best male team that fits in the remaining budget
@@ -83,19 +126,18 @@ def select_best_value_team(valid_riders, criteria_key='score', balance_factor=1.
         # Find the best male team under budget_left
         for m in male_teams:
             if m['value'] <= budget_left:
-                # Create combined team
+                # Create combined team 
                 combined_team = list(f['team']) + list(m['team'])
                 
-                # Calculate raw score
-                total_score = f[criteria_key] + m[criteria_key]
-                
-                # Calculate point variance to promote balance
+                # We still need to calculate balance for the combined team
+                # as we can't simply add the balance scores of male and female teams
                 points_list = [rider['points'] for rider in combined_team]
                 mean_points = sum(points_list) / len(points_list)
                 variance = sum((p - mean_points) ** 2 for p in points_list) / len(points_list)
                 std_dev = variance ** 0.5
                 
-                # Calculate balanced score - penalize teams with high variance
+                # Calculate combined score and balanced score
+                total_score = f[criteria_key] + m[criteria_key]
                 balanced_score = total_score - (std_dev / balance_factor)
                 
                 total_spent = f['value'] + m['value']
@@ -116,11 +158,10 @@ def print_rider(r):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: poetry run python team_selector.py <riders.csv> [balance_factor]")
+        print("Usage: poetry run python team_selector.py <riders.csv> [balance_factor] [keep_top_percent]")
         sys.exit(1)
     
-    # Default balance factor is 1.5, but can be specified as a command line parameter
-    balance_factor = 1.5
+    balance_factor = 30.0
     if len(sys.argv) > 2:
         try:
             balance_factor = float(sys.argv[2])
@@ -128,8 +169,16 @@ if __name__ == "__main__":
         except ValueError:
             print(f"Invalid balance factor: {sys.argv[2]}, using default of {balance_factor}")
     
+    keep_top_percent = 30
+    if len(sys.argv) > 3:
+        try:
+            keep_top_percent = float(sys.argv[3])
+            print(f"Keeping top {keep_top_percent}% of teams by balance score")
+        except ValueError:
+            print(f"Invalid keep_top_percent: {sys.argv[3]}, using default of {keep_top_percent}%")
+    
     riders = read_riders(sys.argv[1])
-    team, spent = select_best_value_team(riders, 'score', balance_factor)
+    team, spent = select_best_value_team(riders, 'score', balance_factor, keep_top_percent)
     males = sorted([r for r in team if r['gender'] == 'male'], key=lambda r: r['value'], reverse=True)
     females = sorted([r for r in team if r['gender'] == 'female'], key=lambda r: r['value'], reverse=True)
     print(f"Selected team (total spent: ${spent:,}):\n")
