@@ -5,7 +5,7 @@ set -e
 set -o pipefail
 
 HTML_FILE="$1"
-BALANCE_FACTOR="${2:-10.0}"
+BALANCE_FACTOR="${2:-30.0}"
 KEEP_TOP_PERCENT="${3:-30}"
 OUTPUT_CSV="${4:-riders.csv}"
 UCI_OUTPUT_CSV="${5:-uci-riders.csv}"

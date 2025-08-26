@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 MEN_UCI_URL = 'https://ucimtbworldseries.com/rankings/series/uci-dhi-world-cup/dhi-men-elite/2025'
 WOMEN_UCI_URL = 'https://ucimtbworldseries.com/rankings/series/uci-dhi-world-cup/dhi-women-elite/2025'
+STANDINGS_URL = 'https://www.ucimtbworldseries.com/api/athletes-standings'
 
 def normalize_name(name):
     # Remove punctuation, spaces, and lowercase
@@ -21,8 +22,46 @@ def fuzzy_match_name(name, candidates, threshold=0.8):
     best = difflib.get_close_matches(name, candidates, n=1, cutoff=threshold)
     return best[0] if best else None
 
+def load_uci_results_from_standings(url, gender):
+    """
+    Fetch UCI results from the standings API and return as a dict mapping
+    (lowercased name, gender) to their result row.
+    """
+    request_bodies = {
+        'male': {"standingTypeSlug": "uci-dhi-world-cup-men-elite-overall-standings", "year": "2025"},
+        'female': {"standingTypeSlug": "uci-dhi-world-cup-women-elite-overall-standings", "year": "2025"}
+    }
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:142.0) Gecko/20100101 Firefox/142.0',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Referer': 'https://www.ucimtbworldseries.com/standings',
+        'Origin': 'https://www.ucimtbworldseries.com',
+        'Connection': 'keep-alive',
+        'Pragma': 'no-cache',
+        'Cache-Control': 'no-cache',
+        'Content-Type': 'application/json',
+    }
+    response = requests.post(url, json=request_bodies[gender], headers=headers)
+    response.raise_for_status()
+    data = response.json()
+    results = {}
+    if 'athletesStandings' in data:
+        for item in data['athletesStandings']:
+            name = item.get('riderFullName')
+            points = item.get('total_points')
+            if name and points is not None:
+                norm_name = normalize_name(name)
+                results[(norm_name, gender)] = {
+                    'Points': str(points)  # Ensure points are string like the old function
+                }
+    return results
+
 def load_uci_results_from_url(url, gender):
-    """Fetch UCI results from a URL (HTML table) and return as a dict mapping (lowercased name, gender) to their result row."""
+    """
+    Fetch UCI results from a URL (HTML table) and return as a dict mapping
+    (lowercased name, gender) to their result row.
+    """
     response = requests.get(url)
     response.raise_for_status()
     html = response.content.decode('utf-8')
@@ -58,10 +97,12 @@ def load_uci_results_from_url(url, gender):
         }
     return results
 
-def merge_uci_results(riders_csv, men_uci_url, women_uci_url, output_csv):
+def merge_uci_results(riders_csv, output_csv):
     riders = []
-    men_uci_results = load_uci_results_from_url(men_uci_url, 'male')
-    women_uci_results = load_uci_results_from_url(women_uci_url, 'female')
+    # men_uci_results = load_uci_results_from_url(men_uci_url, 'male')
+    # women_uci_results = load_uci_results_from_url(women_uci_url, 'female')
+    men_uci_results = load_uci_results_from_standings(STANDINGS_URL, 'male')
+    women_uci_results = load_uci_results_from_standings(STANDINGS_URL, 'female')
     uci_results = {**men_uci_results, **women_uci_results}
     uci_names_by_gender = {
         'male': [k[0] for k in men_uci_results.keys()],
@@ -69,7 +110,7 @@ def merge_uci_results(riders_csv, men_uci_url, women_uci_url, output_csv):
     }
     with open(riders_csv, newline='', encoding='utf-8') as infile:
         reader = csv.DictReader(infile)
-        fieldnames = reader.fieldnames + ['uci_position', 'uci_time', 'uci_points']
+        fieldnames = reader.fieldnames + ['uci_points']
         for row in reader:
             name_key = normalize_name(row['name'])
             gender = row.get('gender', '').strip().lower()
@@ -80,13 +121,9 @@ def merge_uci_results(riders_csv, men_uci_url, women_uci_url, output_csv):
                 if match:
                     uci_row = uci_results.get((match, gender))
             if uci_row:
-                row['uci_position'] = uci_row.get('Rank') or uci_row.get('Position')
-                row['uci_time'] = uci_row.get('Time')
                 row['uci_points'] = uci_row.get('Points')
             else:
                 print(f"Warning: No UCI match for ({row['name']}, {row['value']})")
-                row['uci_position'] = ''
-                row['uci_time'] = ''
                 row['uci_points'] = ''
             riders.append(row)
     with open(output_csv, 'w', newline='', encoding='utf-8') as outfile:
@@ -101,5 +138,5 @@ if __name__ == "__main__":
         sys.exit(1)
     riders_csv = sys.argv[1]
     output_csv = sys.argv[2] if len(sys.argv) > 2 else 'riders_with_uci.csv'
-    merge_uci_results(riders_csv, MEN_UCI_URL, WOMEN_UCI_URL, output_csv)
-    print(f"Merged UCI results from {MEN_UCI_URL} and {WOMEN_UCI_URL} into {output_csv}")
+    merge_uci_results(riders_csv, output_csv)
+    print(f"Merged UCI results into {output_csv}")
